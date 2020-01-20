@@ -35,6 +35,8 @@ import java.util.Map;
 import java.util.HashMap;
 //import java.util.Queue;
 import java.util.Set;
+import java.util.Locale;
+import java.util.ArrayList;
 
 import org.apache.cordova.CordovaInterface;
 import org.apache.cordova.CordovaPlugin;
@@ -46,6 +48,13 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import com.bixolon.printer.BixolonPrinter;
+import com.bixolon.printer.print.BitmapManager;
+import com.bixolon.printer.service.ServiceManager;
+import com.bixolon.printer.property.CodePageManager;
+import com.bixolon.printer.utility.Command;
+import com.bixolon.printer.property.SecurityManager;
+import com.bixolon.printer.print.RunLengthEncoding;
+import java.nio.ByteBuffer;
 
 import android.annotation.SuppressLint;
 import android.app.AlertDialog;
@@ -60,6 +69,36 @@ import android.os.Handler;
 import android.os.Message;
 import android.util.Log;
 import android.widget.Toast;
+
+class elemConfig {
+    int textWidth;
+    int textHeight;
+    String textAlign;
+    String fontStyle;
+    int width;
+    int brightness;
+    int Alignment;
+    public elemConfig(){
+        textWidth=0;
+            textHeight=0;
+            textAlign="";
+            fontStyle="";
+            Alignment = 0;
+    }
+}
+
+class printElem {
+    String rawData;
+    Bitmap bitmap;
+    String type;
+    elemConfig config;
+    public printElem(){
+        config = new elemConfig();
+        type = "";
+        rawData = null;
+    }
+}
+
 
 public class BixolonPrint extends CordovaPlugin {
 
@@ -78,6 +117,10 @@ public class BixolonPrint extends CordovaPlugin {
     public static final String ACTION_DISCONNECT = "disconnect";
     public static final String ACTION_STOP_CONNECTION_LISTENER = "stopConnectionListener";
     public static final String ACTION_PRINT_BITMAP = "printBitmap";
+    public static final String ACTION_GET_BITMAP = "bitmap2printerData";
+
+    public static final String ACTION_ADD_RAWLINE = "addRawLine";
+    public static final String ACTION_PRINT_RAWLINE = "printRaw";
 
     // Alignment string
     public static final String ALIGNMENT_LEFT = "LEFT";
@@ -147,11 +190,17 @@ public class BixolonPrint extends CordovaPlugin {
     private JSONObject mConnectedDeviceStatus;
     public boolean mIsConnected;
     static BixolonPrinter mBixolonPrinter;
+    static BitmapManager   bmpManager;
+    static CodePageManager cpManager;
+    private ServiceManager srvManager;
     //
 
     // MSR Reader
     private CallbackContext msrReaderCallbackContext;
     private CallbackContext connectionListenerCallbackContext;
+
+    private ArrayList<Object> lines;
+    private JSONArray  lines_json = new JSONArray();
 
     @Override
     public void initialize(CordovaInterface cordova, CordovaWebView webView) {
@@ -160,11 +209,18 @@ public class BixolonPrint extends CordovaPlugin {
         super.initialize(cordova, webView);
 
         mBixolonPrinter = new BixolonPrinter(cordova.getActivity(), mHandler, null);
+        bmpManager = new BitmapManager();
+        srvManager = new ServiceManager(this.hashCode(), cordova.getActivity(), mHandler, null);
+        srvManager.executeCommand(Command.INITIALIZATION, false);
+        cpManager = new CodePageManager();
+
+        Locale.setDefault(new Locale("pt","PORTUGAL", "PT"));
+
+        lines = new ArrayList<Object>();
         this.mIsConnected = false;
         this.mConnectedDeviceName = null;
         this.mConnectedDeviceAddress = null;
         this.mConnectedDeviceStatus = null;
-
         this.actionSuccess = null;
         this.actionError = null;
         this.lastActionArgs = null;
@@ -180,8 +236,9 @@ public class BixolonPrint extends CordovaPlugin {
         super.onDestroy();
 
         this.isValidAction = false;
-        mBixolonPrinter.disconnect();
+        //mBixolonPrinter.disconnect();
 
+        this.srvManager.disconnect();
         Log.d(TAG, "BixolonPrint.onDestroy_END");
     }
 
@@ -193,10 +250,10 @@ public class BixolonPrint extends CordovaPlugin {
      * @param callbackContext The callback context used when calling back into JavaScript.
      * @return A PluginRequest object with a status
      */
+
     @Override
     public boolean execute(String action, JSONArray args, final CallbackContext callbackContext) {
         Log.d(TAG, "BixolonPrint.execute_START");
-
         this.isValidAction = true;
         this.cbContext = callbackContext;
         this.lastActionName = action;
@@ -248,18 +305,32 @@ public class BixolonPrint extends CordovaPlugin {
         } else if (ACTION_PRINT_BITMAP.equals(action)) {
             this.optAutoConnect = true;
             this.optToastMessage = true;
-        } else {
+        } else if (ACTION_GET_BITMAP.equals(action)) {
+                     this.optAutoConnect = true;
+                     this.optToastMessage = true;
+/*                     PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, this.bitmap2printerData());
+                     pluginResult.setKeepCallback(true);
+                     callbackContext.sendPluginResult(pluginResult);*/
+          } else if (ACTION_ADD_RAWLINE.equals(action)) {
+                              this.optAutoConnect = true;
+                              this.optToastMessage = true;
+                              PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, this.addRawLine());
+                              pluginResult.setKeepCallback(true);
+                              callbackContext.sendPluginResult(pluginResult);
+        } else if (ACTION_PRINT_RAWLINE.equals(action)) {
+                                PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, this.printRaw());
+                                pluginResult.setKeepCallback(true);
+                                callbackContext.sendPluginResult(pluginResult);
+          } else {
             this.isValidAction = false;
-            this.cbContext.error("Invalid Action");
-            Log.d(TAG, "Invalid action : " + action
-                    + " passed");
+            this.cbContext.error("Invalid Action : " + action);
+            Log.d(TAG, "Invalid action : " + action + " passed");
         }
 
         if (this.isValidAction) {
             this.connect();
         }
 
-        //
         Log.d(TAG, "BixolonPrint.execute_END");
         return this.isValidAction;
     }
@@ -298,7 +369,9 @@ public class BixolonPrint extends CordovaPlugin {
             this.getStatus();
         } else if(ACTION_PRINT_BITMAP.equals(this.lastActionName)){
             this.printBitmap();
-        }
+        } /*else if(ACTION_GET_BITMAP.equals(this.lastActionName)){
+           this.bitmap2printerData();
+        }*/
 
         this.sendConnectionData();
 
@@ -311,6 +384,7 @@ public class BixolonPrint extends CordovaPlugin {
     private void disconnect() {
         Log.d(TAG, "BixolonPrint.disconnect_START");
         mBixolonPrinter.disconnect();
+        srvManager.disconnect();
         Log.d(TAG, "BixolonPrint.disconnect_END");
     }
 
@@ -358,19 +432,334 @@ public class BixolonPrint extends CordovaPlugin {
 
     /**
         print image base64
-        based on 
+        based on
         https://github.com/itsKaynine/cordova-plugin-bixolon-printing
      */
     public static Bitmap decodeBase64Image(String input) {
 		String trimmed = input.replace("data:image/png;base64,", "").replace("data:image/jpg;base64,", "").replace("data:image/jpeg;base64,", "");
-
-	    byte[] arr = Base64.decode(trimmed, 0);
+	    byte[] arr = Base64.decode(input, 0);
 	    return BitmapFactory.decodeByteArray(arr, 0, arr.length);
 	}
-    private void printBitmap() {
-            Log.d(TAG, "printBitmap_BEGIN");
+//Codigo adicionado por David.Ricardo para gerir posicionamento de imagens
+    private JSONArray addRawLine() {
+        Log.d(TAG, "AddRawLine_BEGIN");
+        Object obj;
+        Object config;
+        String type;
         String base64Image;
         int width ;
+        int brightness;
+        int alignment;
+        byte[] temp = new byte[1];
+        try {
+            type = this.lastActionArgs.getString(0);
+        }catch (JSONException e1) {
+            this.isValidAction = false;
+            this.actionError = "error: " + e1.getMessage();
+            this.disconnect();
+            temp[0] = (byte) '1';
+            return null;
+        }
+        if(type.equals("img")) {
+           try {
+                base64Image = this.lastActionArgs.getString(1);
+                width = this.lastActionArgs.getInt(2);
+                brightness = this.lastActionArgs.getInt(3);
+                alignment = this.lastActionArgs.getInt(4);
+            }catch (JSONException e1) {
+                this.isValidAction = false;
+                this.actionError = "print error: " + e1.getMessage() + "TYPE IMAGE";
+                this.disconnect();
+                temp[0] = (byte) '2';
+                //lines_json.put(this.actionError);
+                return null;
+            }
+            printElem elem =  new printElem();
+            lastActionArgs = new JSONArray();
+            lastActionArgs.put(base64Image);
+            lastActionArgs.put(width);
+            lastActionArgs.put(brightness);
+            lastActionArgs.put(alignment);
+            elem.bitmap = bitmap2printerData();
+            elem.rawData = base64Image;
+            elem.type="img";
+            elem.config = new elemConfig();
+            elem.config.Alignment=0;//alignment;
+            this.lines.add(elem);
+            //lines_json.put(elem);
+            try{
+                 JSONObject obj_img = new JSONObject();
+                 obj_img.put("data:" , elem.rawData);
+                 //lines_json.put(obj_img);
+             }
+             catch (JSONException e1) {
+                 this.isValidAction = false;
+                 this.actionError = "print error: " + e1.getMessage();
+                 this.disconnect();
+                 temp[0] = (byte) '2';
+                 return null;
+             }
+            return lines_json;
+        }
+        else if(type.equals("txt"))  {
+            String text;
+            int textWidth;
+            int textHeight;
+            String textAlign;
+            String fontStyle;
+            try {
+                text = this.lastActionArgs.getString(1);
+                textWidth = this.lastActionArgs.getInt(2);
+                textHeight = this.lastActionArgs.getInt(3);
+                textAlign = this.lastActionArgs.getString(4);
+                fontStyle = this.lastActionArgs.getString(5);
+            }catch (JSONException e1) {
+                this.isValidAction = false;
+                this.actionError = "print error: " + e1.getMessage();
+                this.disconnect();
+                temp[0] = (byte) '2';
+                return null;
+            }
+             printElem elem = new printElem();
+             elem.rawData=text.toString();
+             elem.config = new elemConfig();
+             elem.config.textWidth = textWidth;
+             elem.config.textHeight = textHeight;
+             elem.config.textAlign = textAlign;
+             elem.config.fontStyle = fontStyle;
+             elem.type="txt";
+             this.lines.add(elem);
+             //lines_json.put(elem);
+             try{
+                 JSONObject obj_txt = new JSONObject();
+                 obj_txt.put("data:" , elem.rawData);
+                 //lines_json.put(obj_txt);
+             }
+             catch (JSONException e1) {
+                 this.isValidAction = false;
+                 this.actionError = "print error: " + e1.getMessage();
+                 this.disconnect();
+                 temp[0] = (byte) '2';
+                 return null;
+             }
+            return lines_json;
+        }
+         return lines_json;
+    }
+
+	private Bitmap bitmap2printerData() {
+	    Log.d(TAG, "Bitmap2Printer_BEGIN");
+	    String base64Image;
+        int width ;
+        int brightness;
+        int alignment;
+        try {
+            base64Image = this.lastActionArgs.getString(0);
+            width = this.lastActionArgs.getInt(1);
+            brightness = this.lastActionArgs.getInt(2);
+            alignment = this.lastActionArgs.getInt(3);
+        }catch (JSONException e1) {
+            this.isValidAction = false;
+            this.actionError = "print error: " + e1.getMessage();
+            this.disconnect();
+            byte[] temp = new byte[1];
+            temp[0] = (byte) '1';
+            return null;
+        }
+        Bitmap bitmap = decodeBase64Image(base64Image);
+        this.actionSuccess = "getdata success";
+	    return bitmap;
+	}
+
+	private byte[] text2printerData() {
+    	    Log.d(TAG, "text2Printer_BEGIN");
+    	    String txt;
+    	   try {
+               txt = this.lastActionArgs.getString(0);
+           }catch (JSONException e1) {
+               this.isValidAction = false;
+               this.actionError = "print error: " + e1.getMessage();
+               this.disconnect();
+               byte[] temp = new byte[1];
+               temp[0] = (byte) '1';
+               return temp;
+           }
+    	    final byte[] bytes = CodePageManager.getBytes(txt, Locale.getDefault(), 16);
+    	    return bytes;
+    }
+
+    //////
+    private String printRaw() {
+            Log.d(TAG, "printRaw_BEGIN");
+           // try {
+                JSONArray response = new JSONArray();
+                JSONObject res = new JSONObject();
+                ArrayList<ByteBuffer> buffers = new ArrayList<ByteBuffer>();
+                String commands = "";
+                for(Object elem : lines){
+                    if(((printElem) elem).type == "txt")
+                    {
+                        //commands = commands +
+                        this.printRawText(((printElem) elem).rawData, ((printElem) elem).config);// + "\r\n";
+                    } else if((((printElem) elem).type == "img")) {
+                        //commands = commands +
+                        this.printRawImage(/*((printElem) elem).bitmap,*/ ((printElem) elem).rawData, ((printElem) elem).config);// + "\r\n";
+                    }
+                }
+                int size = 0;
+                for(Object buff : buffers){
+                    size = size + ((ByteBuffer) buff).array().length;
+                }
+                final ByteBuffer allocate_res = ByteBuffer.allocate(size);
+                int offset=0;
+                for(Object buff : buffers){
+                    allocate_res.put(((ByteBuffer) buff).array(),offset,((ByteBuffer) buff).array().length);
+                    offset=offset+((ByteBuffer) buff).array().length;
+                }
+
+                lines = new ArrayList<Object>();
+                return this.actionSuccess;
+        }
+
+    /////
+    private String printRawImage(String base64Image, elemConfig config) {
+                Log.d(TAG, "printRawImage_BEGIN");
+                Bitmap bitmap = decodeBase64Image(base64Image);
+                printBitmap1(bitmap,100,-2, 50,false);
+                       /* if (bitmap == null) {
+                        this.actionSuccess = this.actionSuccess +  "sem bitmap";
+                                    return this.actionSuccess;
+                                }
+                          else {
+                            this.actionSuccess = this.actionSuccess +  bitmap.toString();
+                          }
+
+
+                       int width = 100; //bitmap.getWidth();
+                        Log.i("BixolonPrinter", "++ printBitmap(" + bitmap + ", " + -2 + ", " + width + ", " + false + ") ++");
+                        final int maxWidth = this.srvManager.getMaxWidth();
+                        if (width == -1) {
+                            width = maxWidth;
+                        }
+                        else if (width == 0 || width < 0) {
+                            width = bitmap.getWidth();
+                        }
+                        if (width > maxWidth) {
+                            width = maxWidth;
+                        }
+                        final int bitmapHeight = BitmapManager.getBitmapHeight(bitmap, width);
+                         Log.d("BixolonPrinter", "bitmap width: " + width + ", bitmap height: " + bitmapHeight);
+                        final byte[] bitmap2printerData = BitmapManager.bitmap2printerData(bitmap, width, -2, 0, true);
+                       this.a(bitmap2printerData,width,bitmapHeight,-2,false);*/
+
+                this.actionSuccess = "raw print Image success";
+                return this.actionSuccess;
+            }
+
+
+
+            public void printBitmap1(final Bitmap bitmap, final int n, int width, final int n2, final boolean b) {
+                    if (BixolonPrinter.D) {
+                        Log.i("BixolonPrinter", "++ printBitmap(" + bitmap + ", " + n + ", " + width + ", " + n2 + ") ++");
+                    }
+                    if (bitmap == null) {
+                        return;
+                    }
+                    final int maxWidth = this.srvManager.getMaxWidth();
+                    if (width == -1) {
+                        width = maxWidth;
+                    }
+                    else if (width == 0 || width < 0) {
+                        width = bitmap.getWidth();
+                    }
+                    if (width > maxWidth) {
+                        width = maxWidth;
+                    }
+                    byte[] bitmap2printerData;
+                    try {
+                        bitmap2printerData = BitmapManager.bitmap2printerData(bitmap, width, n2, 0, true);
+                    }
+                    catch (RuntimeException ex2) {
+                        final RuntimeException ex = ex2;
+                        ex2.printStackTrace();
+                        Log.e("BixolonPrinter", ex.toString());
+                        this.mHandler.obtainMessage(14, (Object)this.hashCode()).sendToTarget();
+                        return;
+                    }
+                    this.a(bitmap2printerData, width, BitmapManager.getBitmapHeight(bitmap, width), 1, b);
+                }
+
+
+            private void a(final byte[] array, int bytesOfWidth, final int n, final int n2, final boolean b) {
+                    int n3 = 1;
+                    if (n > 1662) {
+                        n3 = 1 + n / 1662;
+                    }
+                    bytesOfWidth = BitmapManager.bytesOfWidth(bytesOfWidth);
+                    for (int i = 0; i < n3; ++i) {
+                        final int n4 = (n > 1662 * (i + 1)) ? 1662 : (n % 1662);
+                        final byte[] array2 = new byte[bytesOfWidth * n4];
+                        System.arraycopy(array, bytesOfWidth * (i * 1662), array2, 0, array2.length);
+                        final ByteBuffer allocate = ByteBuffer.allocate(Command.ALIGNMENT_LEFT.length + Command.RASTER_BIT_IMAGE_NORMAL.length + 4 + array2.length);
+                        switch (n2) {
+                            case 1: {
+                                allocate.put(Command.ALIGNMENT_CENTER);
+                                break;
+                            }
+                            case 2: {
+                                allocate.put(Command.ALIGNMENT_RIGHT);
+                                break;
+                            }
+                            default: {
+                                allocate.put(Command.ALIGNMENT_LEFT);
+                                break;
+                            }
+                        }
+                        allocate.put(Command.RASTER_BIT_IMAGE_NORMAL);
+                        allocate.put((byte)(bytesOfWidth % 256));
+                        allocate.put((byte)(bytesOfWidth / 256));
+                        allocate.put((byte)(n4 % 256));
+                        allocate.put((byte)(n4 / 256));
+                        allocate.put(array2);
+                        this.srvManager.executeCommand(allocate.array(), i >= n3 - 1 && b);
+                    }
+                }
+
+
+    /////
+        private void printRawText(String text, elemConfig config) {
+                    Log.d(TAG, "printRawText_BEGIN");
+                    this.srvManager.executeCommand(10, 16);
+                    final byte[] bytes = CodePageManager.getBytes(text, Locale.getDefault(), 16);
+                    byte[] securityCode = null;
+                    int n4 = Command.ALIGNMENT_LEFT.length + Command.DEVICE_FONT_A.length + Command.UNDERLINE_OFF.length + Command.EMPHASIZED_OFF.length
+                            + Command.REVERSE_OFF.length + Command.CHARACTER_SIZE.length + 1 + bytes.length + 1;
+                    final ByteBuffer allocate = ByteBuffer.allocate(n4);
+                    String commands = text + " :";
+                    if(config.textAlign.equals("center")) {
+                        allocate.put(Command.ALIGNMENT_CENTER);
+                    } else if(config.textAlign.equals("right")) {
+                        allocate.put(Command.ALIGNMENT_RIGHT);
+                    } else if(config.textAlign.equals("left")){
+                         allocate.put(Command.ALIGNMENT_LEFT);
+                    }
+                    if(config.fontStyle.equals("underline")){
+                        allocate.put(Command.UNDERLINE_1DOT_THICK);
+                    } else if(config.fontStyle.equals("bold")){
+                        allocate.put(Command.EMPHASIZED_ON);
+                    }
+                    allocate.put(Command.CHARACTER_SIZE);
+                    allocate.put((byte)config.textWidth);
+                    allocate.put(bytes);
+                    this.srvManager.executeCommand(allocate.array(), false);
+                }
+    ////
+//Fim de codigo novo, 20/01/2020
+
+    private void printBitmap() {
+        Log.d(TAG, "printBitmap_BEGIN");
+        String base64Image;
+        int width;
         int brightness;
         int alignment;
         try {
@@ -388,11 +777,10 @@ public class BixolonPrint extends CordovaPlugin {
             int lineFeed = 3;
             Boolean formFeed = false;
 
-
-
         Bitmap bmp = decodeBase64Image(base64Image);
         try{
-            mBixolonPrinter.printBitmap(bmp,alignment, width,brightness,false);
+            //mBixolonPrinter.printBitmap(bmp,alignment, width,brightness,false);
+            mBixolonPrinter.printBitmap(bmp,width,alignment, brightness,false);
         }
         catch (Exception e2) {
             this.isValidAction = false;
@@ -503,19 +891,19 @@ public class BixolonPrint extends CordovaPlugin {
 
         JSONArray textLines;
         JSONObject printConfig;
-        boolean formFeed;
-        int lineFeed;
-        int codePage;
+        boolean formFeed = true;
+        int lineFeed = 0;
+        int codePage = 16;
 
         try {
             textLines = this.lastActionArgs.getJSONArray(0);
-            printConfig = this.lastActionArgs.getJSONObject(1);
+       /*     printConfig = this.lastActionArgs.getJSONObject(1);
             formFeed = printConfig.getBoolean("formFeed");
             lineFeed = printConfig.getInt("lineFeed");
-            codePage = printConfig.getInt("codePage");
+            codePage = printConfig.getInt("codePage");*/
         } catch (JSONException e1) {
             this.isValidAction = false;
-            this.actionError = "print error: " + e1.getMessage();
+            this.actionError = "print error: " + e1.getMessage() + "111";
             this.disconnect();
             return;
         }
@@ -571,7 +959,7 @@ public class BixolonPrint extends CordovaPlugin {
 
             } catch (JSONException e2) {
                 this.isValidAction = false;
-                this.actionError = "print error: " + e2.getMessage();
+                this.actionError = "print error: " + e2.getMessage() + "222";
                 this.disconnect();
                 return;
             }
@@ -1133,14 +1521,16 @@ public class BixolonPrint extends CordovaPlugin {
 
                         if (BixolonPrint.this.optAutoConnect) {
                             mConnectedDeviceAddress = itemsAddr[0];
-                            BixolonPrint.mBixolonPrinter.connect(itemsAddr[0]);
+                            //BixolonPrint.mBixolonPrinter.connect(itemsAddr[0]);
+                            srvManager.connect(itemsAddr[0],false);
                         } else {
                             new AlertDialog.Builder(BixolonPrint.this.cordova.getActivity())
                                     .setTitle("Available printers")
                                     .setItems(itemsAddr, new DialogInterface.OnClickListener() {
                                         public void onClick(DialogInterface dialog, int which) {
                                             mConnectedDeviceAddress = itemsAddr[which];
-                                            BixolonPrint.mBixolonPrinter.connect(itemsAddr[which]);
+                                            //BixolonPrint.mBixolonPrinter.connect(itemsAddr[which]);
+                                            srvManager.connect(itemsAddr[which],false);
                                         }
                                     })
                                     .show();
