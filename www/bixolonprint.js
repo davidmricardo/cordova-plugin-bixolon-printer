@@ -664,7 +664,101 @@ BixolonPrint.prototype.printBitmap = function (successCallback, errorCallback, c
     [base64Image, width, brightness, alignment]
   );
 };
+BixolonPrint.prototype.bitmap2printerData = function (successCallback, errorCallback, config) {
+  if (!this._isFunction(successCallback)) {
+    successCallback = function (response) {
+      console.log('BixolonPrint.getStatus success: ' + response);
+    };
+  }
+  if (!this._isFunction(errorCallback)) {
+    errorCallback = function (error) {
+      console.error('BixolonPrint.getStatus failure: ' + error);
+    };
+  }
+  var base64Image = config.base64Image;
+  var width = !this._isUndefined(config.width) ? config.width : 100;
+  var brightness = !this._isUndefined(config.brightness) ? config.brightness : 50;
+  var alignment = !this._isUndefined(config.alignment) ? config.alignment : this.ALIGNMENT.CENTER;
+  return exec(
+      successCallback,
+      errorCallback,
+      "BixolonPrint",
+      "bitmap2printerData",
+      [base64Image, width, brightness, alignment]
+  );
+};
 
+
+BixolonPrint.prototype.addRawLine = function (successCallback, errorCallback,config,type) {
+  if (!this._isFunction(successCallback)) {
+    successCallback = function (response) {
+      console.log('BixolonPrint.getStatus success: ' + response);
+    };
+  }
+  if (!this._isFunction(errorCallback)) {
+    errorCallback = function (error) {
+      console.error('BixolonPrint.getStatus failure: ' + error);
+    };
+  }
+  if(type === 'img') {
+    var base64Image = !this._isUndefined(config.base64Image) ? config.base64Image : "";
+    var width = !this._isUndefined(config.width) ? config.width : 100;
+    var brightness = !this._isUndefined(config.brightness) ? config.brightness : 50;
+    var alignment = !this._isUndefined(config.alignment) ? config.alignment : this.ALIGNMENT.CENTER;
+    exec(
+        successCallback,
+        errorCallback,
+        "BixolonPrint",
+        "addRawLine",
+        [type, base64Image, width, brightness, alignment]
+    );
+
+  } else {
+    var text = config.text;
+    var textWidth = config.textWidth;
+    var textHeight = config.textHeight;
+    var textAlign = config.textAlign;
+    var fontStyle = config.fontStyle;
+    //console.log(config);
+    exec(
+        successCallback,
+        errorCallback,
+        "BixolonPrint",
+        "addRawLine",
+        [type, text, textWidth,textHeight,textAlign,fontStyle  ]
+    );
+  }
+
+};
+
+/**
+ *
+ * @param successCallback
+ * @param errorCallback
+ * @param config
+ */
+BixolonPrint.prototype.printRaw = function (successCallback, errorCallback, lines) {
+
+  if (!this._isFunction(successCallback)) {
+    successCallback = function (response) {
+      console.log('BixolonPrint.printText success: ' + response);
+    };
+  }
+
+  if (!this._isFunction(errorCallback)) {
+    errorCallback = function (error) {
+      console.warn('BixolonPrint.printText failure: ' + error);
+    };
+  }
+
+  exec(
+      successCallback,
+      errorCallback,
+      "BixolonPrint",
+      "printRaw",
+      [ lines]
+  );
+};
 var bixolonPrint = new BixolonPrint();
 
 /**
